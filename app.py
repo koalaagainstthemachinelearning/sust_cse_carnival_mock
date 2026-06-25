@@ -21,6 +21,7 @@ class TicketStr(BaseModel):
     message:str
 
 @app.get("/health")
+@app.head("/health")
 async def health():
     return {"status": "ok"}
 
