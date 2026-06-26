@@ -14,6 +14,14 @@ from fastapi import HTTPException,Request
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+
+import logging 
+import time
+
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 load_dotenv()
 
 limiter = Limiter(key_func=get_remote_address)
@@ -40,10 +48,12 @@ async def health():
 @app.post("/sort-ticket")
 @limiter.limit("2/minute")
 async def sort_ticket(request:Request, ticket:TicketStr):
+    start_time=time.time()
     if not ticket.message:
         raise HTTPException(status_code=400, detail="Message is required")
     if not ticket.ticket_id:
         raise HTTPException(status_code=400, detail="Ticket ID is required")
+    logger.info(f"Received ticket | id={ticket.ticket_id} | channel={ticket.channel}")
     prompt = f"""
 You are a classifier for a digital finance support system in Bangladesh.
 
@@ -86,7 +96,10 @@ Return ONLY the JSON object. No explanation, no markdown, no extra text.
     human_review = (
     result["severity"] in ["critical", "high"]
     or result["case_type"] == "phishing_or_social_engineering"
-)
+)   
+    end_time=time.time()
+    elapsed=round(end_time-start_time,4)
+    logger.info(f"Processed ticket | id={ticket.ticket_id} | time={elapsed}s")
 
     return {
         "ticket_id": ticket.ticket_id,
