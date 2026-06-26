@@ -9,9 +9,17 @@ from fastapi import FastAPI# pyrefly: ignore [missing-import]
 from pydantic import BaseModel
 from typing import Optional 
 import json
+# pyrefly: ignore [missing-import]
+from fastapi import HTTPException,Request
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 load_dotenv()
 
+limiter = Limiter(key_func=get_remote_address)
 app=FastAPI()
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 class TicketStr(BaseModel):
@@ -20,13 +28,22 @@ class TicketStr(BaseModel):
     locale:Optional[str]=None
     message:str
 
+@app.get("/")
+async def root():
+    return {"message": "Welcome to the Ticket Classifier API"}
+
 @app.get("/health")
 @app.head("/health")
 async def health():
     return {"status": "ok"}
 
 @app.post("/sort-ticket")
-async def sort_ticket(ticket:TicketStr):
+@limiter.limit("2/minute")
+async def sort_ticket(request:Request, ticket:TicketStr):
+    if not ticket.message:
+        raise HTTPException(status_code=400, detail="Message is required")
+    if not ticket.ticket_id:
+        raise HTTPException(status_code=400, detail="Ticket ID is required")
     prompt = f"""
 You are a classifier for a digital finance support system in Bangladesh.
 
@@ -48,24 +65,24 @@ Customer message: "{ticket.message}"
 
 Return ONLY the JSON object. No explanation, no markdown, no extra text.
 """
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt
+        )
 
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt
-    )
+        raw = response.text.strip()
 
-    raw = response.text.strip()
+        # Strip markdown if Gemini wraps in ```json ... ```
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.strip()
 
-    # Strip markdown if Gemini wraps in ```json ... ```
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-        raw = raw.strip()
-
-    result = json.loads(raw)
-
-    # You calculate this — never trust LLM for safety rules
+        result = json.loads(raw)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error parsing JSON from Gemini: {str(e)}")
     human_review = (
     result["severity"] in ["critical", "high"]
     or result["case_type"] == "phishing_or_social_engineering"
